@@ -1,4 +1,10 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   AlertCircle,
   AlertTriangle,
@@ -79,6 +85,7 @@ const DEFAULT_FONT_SIZE = 13;
 
 /**
  * Highlights ${...} and $(...) Xacro / ROS2 Launch substitutions inside XML attribute values.
+ * Uses uniform 400 normal font weight so glyph widths match the transparent textarea 1:1.
  */
 function renderAttrValueWithXacroExpressions(
   attrVal: string,
@@ -106,10 +113,7 @@ function renderAttrValueWithXacroExpressions(
       );
     }
     parts.push(
-      <span
-        key={`${baseKey}-x-${subKey++}`}
-        className="text-[#DCDCAA] font-semibold"
-      >
+      <span key={`${baseKey}-x-${subKey++}`} className="text-[#DCDCAA]">
         {match[0]}
       </span>,
     );
@@ -127,8 +131,9 @@ function renderAttrValueWithXacroExpressions(
 
 /**
  * Tokenizes a single line of XML / URDF / Xacro / Launch XML into VS Code Dark+ spans.
+ * Guarantees 100% lossless character preservation and uniform monospace glyph widths.
  */
-function renderVsCodeXmlLine(lineText: string): React.ReactNode {
+export function renderVsCodeXmlLine(lineText: string): React.ReactNode {
   if (!lineText) return '\u00A0';
 
   const tokens: React.ReactNode[] = [];
@@ -143,7 +148,7 @@ function renderVsCodeXmlLine(lineText: string): React.ReactNode {
       if (commentEnd !== -1) {
         const commentStr = remaining.slice(0, commentEnd + 3);
         tokens.push(
-          <span key={keyIdx++} className="text-[#6A9955] italic">
+          <span key={keyIdx++} className="text-[#6A9955]">
             {commentStr}
           </span>,
         );
@@ -151,7 +156,7 @@ function renderVsCodeXmlLine(lineText: string): React.ReactNode {
         continue;
       } else {
         tokens.push(
-          <span key={keyIdx++} className="text-[#6A9955] italic">
+          <span key={keyIdx++} className="text-[#6A9955]">
             {remaining}
           </span>,
         );
@@ -173,11 +178,16 @@ function renderVsCodeXmlLine(lineText: string): React.ReactNode {
     }
 
     // 3. XML Tag <tag attr="val"> or </tag> or multi-line tag opening
-    const tagMatch = remaining.match(/^<(\/?)([a-zA-Z0-9_:-]+)([^>]*?)(\/?>)?$/);
-    const fullTagMatch = remaining.match(/^<(\/?)([a-zA-Z0-9_:-]+)([^>]*?)(\/?>)/);
+    const fullTagMatch = remaining.match(
+      /^<(\/?)([a-zA-Z0-9_:-]+)([^<>]*?)(\/?>)/,
+    );
+    const tagMatch = remaining.match(
+      /^<(\/?)([a-zA-Z0-9_:-]+)([^<>]*?)(\/?>)?$/,
+    );
     const activeMatch = fullTagMatch || tagMatch;
     if (activeMatch) {
-      const [fullTag, slash, tagName, attrChunk, closeBracket = ''] = activeMatch;
+      const [fullTag, slash, tagName, attrChunk, closeBracket = ''] =
+        activeMatch;
       const isXacroTag = tagName.startsWith('xacro:');
       tokens.push(
         <span key={keyIdx++} className="text-[#808080]">
@@ -187,9 +197,7 @@ function renderVsCodeXmlLine(lineText: string): React.ReactNode {
       tokens.push(
         <span
           key={keyIdx++}
-          className={
-            isXacroTag ? 'text-[#4EC9B0] font-semibold' : 'text-[#569CD6]'
-          }
+          className={isXacroTag ? 'text-[#4EC9B0]' : 'text-[#569CD6]'}
         >
           {tagName}
         </span>,
@@ -316,7 +324,7 @@ function renderVsCodeCodeLine(
 
   const trimmed = lineText.trimStart();
   if (trimmed.startsWith('#')) {
-    return <span className="text-[#6A9955] italic">{lineText}</span>;
+    return <span className="text-[#6A9955]">{lineText}</span>;
   }
 
   if (language === 'launch_py') {
@@ -405,7 +413,7 @@ function renderVsCodeCodeLine(
       const word = m[0];
       if (word.startsWith('${')) {
         tokens.push(
-          <span key={k++} className="text-[#DCDCAA] font-semibold">
+          <span key={k++} className="text-[#DCDCAA]">
             {word}
           </span>,
         );
@@ -478,7 +486,12 @@ export const XmlEditorPane: React.FC<XmlEditorPaneProps> = ({
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const gutterRef = useRef<HTMLDivElement | null>(null);
+  const gutterInnerRef = useRef<HTMLDivElement | null>(null);
   const highlightPreRef = useRef<HTMLPreElement | null>(null);
+  const highlightInnerRef = useRef<HTMLDivElement | null>(null);
+  const pendingSelectionRef = useRef<{ start: number; end: number } | null>(
+    null,
+  );
 
   const [fontSize, setFontSize] = useState<number>(() => {
     try {
@@ -524,6 +537,19 @@ export const XmlEditorPane: React.FC<XmlEditorPaneProps> = ({
     ? fileFormat
     : activeFileEntry?.language ?? 'urdf';
 
+  // Debounce live URDF/Xacro diagnostic compilation during rapid keystrokes (Backspace/Space)
+  const [debouncedXmlCode, setDebouncedXmlCode] = useState<string>(xmlCode);
+  useEffect(() => {
+    if (!isDirty) {
+      setDebouncedXmlCode(xmlCode);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setDebouncedXmlCode(xmlCode);
+    }, 50);
+    return () => window.clearTimeout(timer);
+  }, [xmlCode, isDirty]);
+
   const lineHeightPx = Math.round(fontSize * 1.55);
   const lines = useMemo(() => displayedCode.split('\n'), [displayedCode]);
 
@@ -555,6 +581,11 @@ export const XmlEditorPane: React.FC<XmlEditorPaneProps> = ({
     }
   };
 
+  const activeUrdfLiveDiagnostics = useMemo(() => {
+    if (!isEditingUrdfOrXacro) return model.diagnostics;
+    return isDirty ? compileUrdf(debouncedXmlCode).diagnostics : model.diagnostics;
+  }, [isEditingUrdfOrXacro, isDirty, debouncedXmlCode, model.diagnostics]);
+
   // Compute diagnostics for every file in the ROS 2 workspace
   const workspaceDiagnosticsByFile = useMemo(() => {
     const result: Record<string, CompilerDiagnostic[]> = {};
@@ -566,19 +597,17 @@ export const XmlEditorPane: React.FC<XmlEditorPaneProps> = ({
         pathKey === activeFilePath &&
         (entry.language === 'urdf' || entry.language === 'xacro')
       ) {
-        result[pathKey] = isDirty
-          ? compileUrdf(xmlCode).diagnostics
-          : model.diagnostics;
+        result[pathKey] = activeUrdfLiveDiagnostics;
       } else {
         result[pathKey] = validateWorkspaceFile(pathKey, workspaceFiles);
       }
     }
     return result;
-  }, [workspaceFiles, activeFilePath, isDirty, xmlCode, model.diagnostics]);
+  }, [workspaceFiles, activeFilePath, activeUrdfLiveDiagnostics]);
 
   const activeFileDiagnostics = useMemo(() => {
     if (isEditingUrdfOrXacro) {
-      return isDirty ? compileUrdf(xmlCode).diagnostics : model.diagnostics;
+      return activeUrdfLiveDiagnostics;
     }
     return (
       workspaceDiagnosticsByFile[activeFilePath] ??
@@ -586,9 +615,7 @@ export const XmlEditorPane: React.FC<XmlEditorPaneProps> = ({
     );
   }, [
     isEditingUrdfOrXacro,
-    isDirty,
-    xmlCode,
-    model.diagnostics,
+    activeUrdfLiveDiagnostics,
     workspaceDiagnosticsByFile,
     activeFilePath,
     workspaceFiles,
@@ -632,23 +659,29 @@ export const XmlEditorPane: React.FC<XmlEditorPaneProps> = ({
     otherWorkspaceDiagnostics.filter((i) => i.diagnostic.severity === 'warning')
       .length;
 
-  const handleScroll = () => {
+  const syncEditorScroll = () => {
     const el = textareaRef.current;
     if (!el) return;
-    if (gutterRef.current) {
-      gutterRef.current.scrollTop = el.scrollTop;
+    const top = el.scrollTop;
+    const left = el.scrollLeft;
+    if (gutterInnerRef.current) {
+      gutterInnerRef.current.style.transform = `translate3d(0px, ${-top}px, 0px)`;
     }
-    if (highlightPreRef.current) {
-      highlightPreRef.current.scrollTop = el.scrollTop;
-      highlightPreRef.current.scrollLeft = el.scrollLeft;
+    if (highlightInnerRef.current) {
+      highlightInnerRef.current.style.transform = `translate3d(${-left}px, ${-top}px, 0px)`;
     }
   };
 
-  const updateCursorLineCol = () => {
-    const el = textareaRef.current;
-    if (!el) return;
-    const pos = el.selectionStart || 0;
-    const upToCursor = displayedCode.slice(0, pos);
+  const handleScroll = () => {
+    syncEditorScroll();
+  };
+
+  const updateCursorLineColFromElement = (
+    el: HTMLTextAreaElement,
+    codeStr: string = el.value,
+  ) => {
+    const pos = el.selectionStart ?? 0;
+    const upToCursor = codeStr.slice(0, pos);
     const split = upToCursor.split('\n');
     setCursorPos({
       line: split.length,
@@ -656,18 +689,40 @@ export const XmlEditorPane: React.FC<XmlEditorPaneProps> = ({
     });
   };
 
+  const updateCursorLineCol = () => {
+    const el = textareaRef.current;
+    if (!el) return;
+    updateCursorLineColFromElement(el, displayedCode);
+    syncEditorScroll();
+  };
+
+  // Preserve exact selection/caret and scroll alignment across controlled React renders
+  useLayoutEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    const pending = pendingSelectionRef.current;
+    if (pending && document.activeElement === el) {
+      const maxLen = el.value.length;
+      const clampedStart = Math.min(pending.start, maxLen);
+      const clampedEnd = Math.min(pending.end, maxLen);
+      if (
+        el.selectionStart !== clampedStart ||
+        el.selectionEnd !== clampedEnd
+      ) {
+        el.setSelectionRange(clampedStart, clampedEnd);
+      }
+      pendingSelectionRef.current = null;
+    }
+    syncEditorScroll();
+  }, [displayedCode, activeFilePath, fontSize]);
+
   const scrollToLine = (lineNumber: number) => {
     setHighlightedLine(lineNumber);
     const el = textareaRef.current;
     if (!el) return;
     const targetScroll = Math.max(0, (lineNumber - 4) * lineHeightPx);
     el.scrollTop = targetScroll;
-    if (gutterRef.current) {
-      gutterRef.current.scrollTop = targetScroll;
-    }
-    if (highlightPreRef.current) {
-      highlightPreRef.current.scrollTop = targetScroll;
-    }
+    syncEditorScroll();
   };
 
   const handleCodeChange = (nextVal: string) => {
@@ -701,13 +756,12 @@ export const XmlEditorPane: React.FC<XmlEditorPaneProps> = ({
     if (e.key === 'Tab') {
       e.preventDefault();
       const el = e.currentTarget;
-      const start = el.selectionStart;
-      const end = el.selectionEnd;
-      const next = displayedCode.slice(0, start) + '  ' + displayedCode.slice(end);
+      const start = el.selectionStart ?? 0;
+      const end = el.selectionEnd ?? 0;
+      const next =
+        displayedCode.slice(0, start) + '  ' + displayedCode.slice(end);
+      pendingSelectionRef.current = { start: start + 2, end: start + 2 };
       handleCodeChange(next);
-      requestAnimationFrame(() => {
-        el.selectionStart = el.selectionEnd = start + 2;
-      });
     }
   };
 
@@ -1287,10 +1341,7 @@ export const XmlEditorPane: React.FC<XmlEditorPaneProps> = ({
           >
             <button
               type="button"
-              onClick={() => {
-                onChangeFileFormat('urdf');
-                onSelectWorkspaceFile('my_robot_description/urdf/my_robot.urdf');
-              }}
+              onClick={() => onChangeFileFormat('urdf')}
               data-testid="format-option-urdf"
               title="Open standard my_robot.urdf"
               className={`px-2 py-0.5 text-[11px] font-mono rounded transition-colors ${
@@ -1303,12 +1354,7 @@ export const XmlEditorPane: React.FC<XmlEditorPaneProps> = ({
             </button>
             <button
               type="button"
-              onClick={() => {
-                onChangeFileFormat('xacro');
-                onSelectWorkspaceFile(
-                  'my_robot_description/urdf/my_robot.urdf.xacro',
-                );
-              }}
+              onClick={() => onChangeFileFormat('xacro')}
               data-testid="format-option-xacro"
               title="Open ROS 2 Xacro my_robot.urdf.xacro"
               className={`px-2 py-0.5 text-[11px] font-mono rounded transition-colors ${
@@ -1640,40 +1686,42 @@ export const XmlEditorPane: React.FC<XmlEditorPaneProps> = ({
           }}
           className="w-12 py-3 bg-[#181818] border-r border-[#2b2b2b] text-right vscode-code-font select-none overflow-hidden shrink-0"
         >
-          {lines.map((_, idx) => {
-            const lineNum = idx + 1;
-            const lineDiags = diagnosticsByLine.get(lineNum);
-            const hasErr = lineDiags?.some((d) => d.severity === 'error');
-            const hasWarn = lineDiags?.some((d) => d.severity === 'warning');
-            const isHighlighted = highlightedLine === lineNum;
-            const isCursorLine = cursorPos.line === lineNum;
+          <div ref={gutterInnerRef} className="will-change-transform">
+            {lines.map((_, idx) => {
+              const lineNum = idx + 1;
+              const lineDiags = diagnosticsByLine.get(lineNum);
+              const hasErr = lineDiags?.some((d) => d.severity === 'error');
+              const hasWarn = lineDiags?.some((d) => d.severity === 'warning');
+              const isHighlighted = highlightedLine === lineNum;
+              const isCursorLine = cursorPos.line === lineNum;
 
-            return (
-              <div
-                key={lineNum}
-                style={{ height: `${lineHeightPx}px` }}
-                title={lineDiags?.map((d) => d.message).join('\n')}
-                className={`px-2 flex items-center justify-end gap-1 ${
-                  hasErr
-                    ? 'bg-rose-500/25 text-rose-400 font-bold'
-                    : hasWarn
-                      ? 'bg-amber-500/20 text-amber-300 font-semibold'
-                      : isHighlighted
-                        ? 'bg-sky-500/25 text-sky-300 font-semibold'
-                        : isCursorLine
-                          ? 'bg-[#282d37] text-[#c6c6c6] font-medium'
-                          : 'text-[#858585]'
-                }`}
-              >
-                {hasErr ? (
-                  <span className="text-rose-400">!</span>
-                ) : hasWarn ? (
-                  <span className="text-amber-400">~</span>
-                ) : null}
-                <span>{lineNum}</span>
-              </div>
-            );
-          })}
+              return (
+                <div
+                  key={lineNum}
+                  style={{ height: `${lineHeightPx}px` }}
+                  title={lineDiags?.map((d) => d.message).join('\n')}
+                  className={`px-2 flex items-center justify-end gap-1 ${
+                    hasErr
+                      ? 'bg-rose-500/25 text-rose-400 font-bold'
+                      : hasWarn
+                        ? 'bg-amber-500/20 text-amber-300 font-semibold'
+                        : isHighlighted
+                          ? 'bg-sky-500/25 text-sky-300 font-semibold'
+                          : isCursorLine
+                            ? 'bg-[#282d37] text-[#c6c6c6] font-medium'
+                            : 'text-[#858585]'
+                  }`}
+                >
+                  {hasErr ? (
+                    <span className="text-rose-400">!</span>
+                  ) : hasWarn ? (
+                    <span className="text-amber-400">~</span>
+                  ) : null}
+                  <span>{lineNum}</span>
+                </div>
+              );
+            })}
+          </div>
         </div>
 
         {/* Synchronized Syntax Highlight Underlay + Editable Textarea Overlay */}
@@ -1687,26 +1735,31 @@ export const XmlEditorPane: React.FC<XmlEditorPaneProps> = ({
             }}
             className="absolute inset-0 m-0 p-3 vscode-code-font pointer-events-none overflow-hidden whitespace-pre select-none"
           >
-            {lines.map((lineText, idx) => {
-              const lineNum = idx + 1;
-              const isCursorLine = cursorPos.line === lineNum;
-              const isHighlighted = highlightedLine === lineNum;
-              return (
-                <div
-                  key={lineNum}
-                  style={{ height: `${lineHeightPx}px` }}
-                  className={`${
-                    isHighlighted
-                      ? 'bg-sky-500/15'
-                      : isCursorLine
-                        ? 'bg-[#282d37]/75'
-                        : ''
-                  }`}
-                >
-                  {renderVsCodeCodeLine(lineText, activeLanguage)}
-                </div>
-              );
-            })}
+            <div
+              ref={highlightInnerRef}
+              className="min-w-max will-change-transform"
+            >
+              {lines.map((lineText, idx) => {
+                const lineNum = idx + 1;
+                const isCursorLine = cursorPos.line === lineNum;
+                const isHighlighted = highlightedLine === lineNum;
+                return (
+                  <div
+                    key={lineNum}
+                    style={{ height: `${lineHeightPx}px` }}
+                    className={`${
+                      isHighlighted
+                        ? 'bg-sky-500/15'
+                        : isCursorLine
+                          ? 'bg-[#282d37]/75'
+                          : ''
+                    }`}
+                  >
+                    {renderVsCodeCodeLine(lineText, activeLanguage)}
+                  </div>
+                );
+              })}
+            </div>
           </pre>
 
           <textarea
@@ -1715,17 +1768,30 @@ export const XmlEditorPane: React.FC<XmlEditorPaneProps> = ({
             spellCheck={false}
             autoCapitalize="off"
             autoComplete="off"
+            autoCorrect="off"
+            wrap="off"
             value={displayedCode}
-            onChange={(e) => handleCodeChange(e.target.value)}
+            onChange={(e) => {
+              const el = e.currentTarget;
+              pendingSelectionRef.current = {
+                start: el.selectionStart ?? 0,
+                end: el.selectionEnd ?? 0,
+              };
+              handleCodeChange(el.value);
+              updateCursorLineColFromElement(el, el.value);
+              syncEditorScroll();
+            }}
             onScroll={handleScroll}
             onKeyUp={updateCursorLineCol}
             onClick={updateCursorLineCol}
+            onMouseUp={updateCursorLineCol}
+            onSelect={updateCursorLineCol}
             onKeyDown={handleKeyDown}
             style={{
               fontSize: `${fontSize}px`,
               lineHeight: `${lineHeightPx}px`,
             }}
-            className="relative z-10 w-full h-full p-3 bg-transparent text-transparent caret-sky-400 selection:bg-[#264f78]/65 vscode-code-font resize-none focus:outline-none overflow-auto whitespace-pre"
+            className="relative z-10 w-full h-full m-0 p-3 border-0 bg-transparent text-transparent caret-sky-400 selection:bg-[#264f78]/65 vscode-code-font resize-none focus:outline-none overflow-auto whitespace-pre"
           />
         </div>
       </div>

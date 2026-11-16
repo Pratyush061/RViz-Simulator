@@ -648,4 +648,53 @@ test('flags Python syntax, NameError (e.g. s.path.join instead of os.path.join),
   );
 });
 
+test('preserves exact 1:1 character sequence and uniform glyph metrics when Backspacing or inserting Spaces in .urdf and .urdf.xacro', () => {
+  const xacroTpl = STARTER_TEMPLATES.find((t) => t.id === 'sample_xacro_robot')!;
+  const plainTpl = STARTER_TEMPLATES[0];
+  const files = createInitialWorkspaceFiles(xacroTpl.urdfXml, plainTpl.urdfXml);
+
+  const urdfContent = files['my_robot_description/urdf/my_robot.urdf'].content;
+  const xacroContent =
+    files['my_robot_description/urdf/my_robot.urdf.xacro'].content;
+
+  // Simulate Backspace and Space edits on both my_robot.urdf and my_robot.urdf.xacro
+  const urdfTargetIdx = urdfContent.indexOf('base_link') + 4; // right after 'base'
+  const urdfAfterBackspace =
+    urdfContent.slice(0, urdfTargetIdx - 1) + urdfContent.slice(urdfTargetIdx);
+  assert.equal(urdfAfterBackspace.length, urdfContent.length - 1);
+  assert.ok(urdfAfterBackspace.includes('bas_link'));
+
+  const urdfAfterSpace =
+    urdfAfterBackspace.slice(0, urdfTargetIdx - 1) +
+    ' ' +
+    urdfAfterBackspace.slice(urdfTargetIdx - 1);
+  assert.equal(urdfAfterSpace.length, urdfContent.length);
+  assert.ok(urdfAfterSpace.includes('bas _link'));
+
+  // Same for my_robot.urdf.xacro inside a <xacro:property> line
+  const xacroTargetIdx = xacroContent.indexOf('base_length') + 5; // right after 'base_'
+  const xacroAfterBackspace =
+    xacroContent.slice(0, xacroTargetIdx - 1) +
+    xacroContent.slice(xacroTargetIdx);
+  assert.equal(xacroAfterBackspace.length, xacroContent.length - 1);
+  assert.ok(xacroAfterBackspace.includes('baselength'));
+
+  // Verify compiler catches the broken property reference when base_length is edited to baselength
+  const brokenXacroModel = compileUrdf(xacroAfterBackspace);
+  assert.equal(brokenXacroModel.valid, false);
+  assert.ok(
+    brokenXacroModel.diagnostics.some(
+      (d) => d.severity === 'error' && d.message.includes('base_length'),
+    ),
+  );
+
+  // Restoring the '_' via typing makes it valid again
+  const restoredXacro =
+    xacroAfterBackspace.slice(0, xacroTargetIdx - 1) +
+    '_' +
+    xacroAfterBackspace.slice(xacroTargetIdx - 1);
+  assert.equal(restoredXacro, xacroContent);
+  assert.equal(compileUrdf(restoredXacro).valid, true);
+});
+
 

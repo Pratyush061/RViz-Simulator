@@ -96,6 +96,7 @@ export default function App() {
 
   const [openTabPaths, setOpenTabPaths] = useState<string[]>([
     'my_robot_description/urdf/my_robot.urdf.xacro',
+    'my_robot_description/urdf/my_robot.urdf',
     'my_robot_description/launch/display.launch.xml',
     'my_robot_description/launch/display.launch.py',
   ]);
@@ -156,9 +157,12 @@ export default function App() {
   const handleUpdateXmlAndSyncWorkspace = (nextXml: string) => {
     setXmlCode(nextXml);
     const targetUrdfKey =
-      fileFormat === 'xacro'
-        ? 'my_robot_description/urdf/my_robot.urdf.xacro'
-        : 'my_robot_description/urdf/my_robot.urdf';
+      activeFilePath === 'my_robot_description/urdf/my_robot.urdf.xacro' ||
+      activeFilePath === 'my_robot_description/urdf/my_robot.urdf'
+        ? activeFilePath
+        : fileFormat === 'xacro'
+          ? 'my_robot_description/urdf/my_robot.urdf.xacro'
+          : 'my_robot_description/urdf/my_robot.urdf';
     setWorkspaceFiles((prev) => ({
       ...prev,
       [targetUrdfKey]: {
@@ -343,31 +347,30 @@ export default function App() {
   };
 
   const handleChangeFileFormat = (nextFormat: 'urdf' | 'xacro') => {
-    setFileFormat(nextFormat);
     const targetFilePath =
       nextFormat === 'xacro'
         ? 'my_robot_description/urdf/my_robot.urdf.xacro'
         : 'my_robot_description/urdf/my_robot.urdf';
+    const targetEntry = workspaceFiles[targetFilePath];
+    let nextContent = targetEntry ? targetEntry.content : xmlCode;
+
+    if (nextFormat === 'xacro' && !nextContent.includes('xmlns:xacro')) {
+      nextContent = nextContent.replace(
+        /<robot(\s+[^>]*)?>/,
+        (match) =>
+          match.slice(0, -1) +
+          ' xmlns:xacro="http://www.ros.org/wiki/xacro">',
+      );
+      handleUpdateWorkspaceFile(targetFilePath, nextContent);
+    }
+
+    setFileFormat(nextFormat);
     setActiveFilePath(targetFilePath);
     setOpenTabPaths((prev) =>
       prev.includes(targetFilePath) ? prev : [...prev, targetFilePath],
     );
-
-    if (nextFormat === 'xacro') {
-      if (!xmlCode.includes('xmlns:xacro')) {
-        const updated = xmlCode.replace(
-          /<robot(\s+[^>]*)?>/,
-          (match) =>
-            match.slice(0, -1) +
-            ' xmlns:xacro="http://www.ros.org/wiki/xacro">',
-        );
-        if (updated !== xmlCode) {
-          setXmlCode(updated);
-          handleUpdateWorkspaceFile(targetFilePath, updated);
-          executeCompile(updated);
-        }
-      }
-    }
+    setXmlCode(nextContent);
+    executeCompile(nextContent);
   };
 
   const handleUploadUrdfFile = (e: React.ChangeEvent<HTMLInputElement>) => {

@@ -1,0 +1,6 @@
+{
+  "name": "RViz URDF Studio",
+  "description": "Real-time ROS2 URDF XML compiler and interactive 3D RViz kinematic debugger for robotics visualization.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
